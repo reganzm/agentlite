@@ -2,11 +2,15 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
+use http::{HeaderName, HeaderValue};
 use rmcp::{
     ServiceExt,
     model::{CallToolRequestParams, CallToolResult},
     service::ServiceError,
-    transport::{ConfigureCommandExt, TokioChildProcess},
+    transport::{
+        ConfigureCommandExt, StreamableHttpClientTransport, TokioChildProcess,
+        streamable_http_client::StreamableHttpClientTransportConfig,
+    },
 };
 use serde_json::Value;
 
@@ -118,6 +122,67 @@ fn sanitize_label(label: &str) -> String {
             }
         })
         .collect()
+}
+
+async fn connect_one_mcp_server(
+    entry: &McpServerEntry,
+) -> Result<rmcp::service::RunningService<rmcp::RoleClient, ()>, Box<dyn std::error::Error + Send + Sync>>
+{
+    let url = entry
+        .url
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+
+    if let Some(url) = url {
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err(format!(
+                "mcp server `{}`: url must start with http:// or https://",
+                entry.label
+            )
+            .into());
+        }
+        let mut config = StreamableHttpClientTransportConfig::with_uri(url);
+        if let Some(token) = entry
+            .bearer_token
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            config = config.auth_header(token.to_string());
+        }
+        if !entry.headers.is_empty() {
+            let mut headers = HashMap::new();
+            for (k, v) in &entry.headers {
+                let name = HeaderName::from_bytes(k.as_bytes()).map_err(|_| {
+                    format!("mcp server `{}`: invalid http header name `{k}`", entry.label)
+                })?;
+                let value = HeaderValue::from_str(v).map_err(|_| {
+                    format!("mcp server `{}`: invalid http header value for `{k}`", entry.label)
+                })?;
+                headers.insert(name, value);
+            }
+            config = config.custom_headers(headers);
+        }
+        let transport = StreamableHttpClientTransport::from_config(config);
+        Ok(().serve(transport).await?)
+    } else if !entry.command.trim().is_empty() {
+        let transport = TokioChildProcess::new(tokio::process::Command::new(&entry.command).configure(
+            |cmd| {
+                cmd.args(&entry.args);
+                for (k, v) in &entry.env {
+                    cmd.env(k, v);
+                }
+            },
+        ))?;
+        Ok(().serve(transport).await?)
+    } else {
+        Err(format!(
+            "mcp server `{}`: set `url` (http/https) for remote MCP or `command` for local stdio",
+            entry.label
+        )
+        .into())
+    }
 }
 
 pub struct ToolCatalog {
@@ -279,17 +344,7 @@ impl ToolCatalogBuilder {
 
         for entry in &self.mcp_servers {
             let label = sanitize_label(&entry.label);
-            let transport =
-                TokioChildProcess::new(tokio::process::Command::new(&entry.command).configure(
-                    |cmd| {
-                        cmd.args(&entry.args);
-                        for (k, v) in &entry.env {
-                            cmd.env(k, v);
-                        }
-                    },
-                ))?;
-
-            let client = ().serve(transport).await?;
+            let client = connect_one_mcp_server(entry).await?;
             let tools = client.list_all_tools().await?;
             let mut routes = HashMap::new();
 

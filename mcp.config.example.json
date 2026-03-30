@@ -1,0 +1,22 @@
+{
+  "servers": [
+    {
+      "label": "fs",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "."
+      ],
+      "env": {}
+    },
+    {
+      "label": "cloud",
+      "url": "https://your-mcp-host.example/mcp",
+      "headers": {
+        "X-API-Key": "optional-secret"
+      },
+      "bearer_token": "optional-bearer-token-without-Bearer-prefix"
+    }
+  ]
+}

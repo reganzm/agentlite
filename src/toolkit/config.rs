@@ -25,9 +25,20 @@ pub fn load_mcp_servers_from_env() -> Result<Vec<McpServerEntry>, Box<dyn std::e
 pub struct McpServerEntry {
     /// Short id used to prefix tool names, e.g. `fs__read_file`.
     pub label: String,
+    /// Local MCP server: executable (ignored when `url` is set).
+    #[serde(default)]
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// Remote MCP (MCP streamable HTTP): `http://` or `https://` endpoint. When set, `command` is not used.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Extra HTTP headers for remote MCP (`url` only). Names must be valid HTTP header names.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    /// Bearer token for `Authorization` (without `Bearer ` prefix; see rmcp). Used with `url` only.
+    #[serde(default)]
+    pub bearer_token: Option<String>,
 }
