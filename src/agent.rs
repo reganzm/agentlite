@@ -1,23 +1,65 @@
 use async_openai::{Client, config::OpenAIConfig};
 use serde_json::{Value, json};
 
-use crate::tools::{execute_tool, get_tool_definitions};
+use crate::toolkit::{new_trace_id, ToolCatalog};
 
 pub struct Agent {
     client: Client<OpenAIConfig>,
     model: String,
     messages: Vec<Value>,
     tools: Value,
+    catalog: ToolCatalog,
+    /// User/session scope for audit: in-product this should be **one id per chat** (from host).
+    /// CLI placeholder: new id each run unless `AGENTLITE_SESSION_ID` is set.
+    session_id: String,
+    /// One id per user task (`run`); all tool audit lines share this for correlation.
+    trace_id: String,
 }
 
 impl Agent {
-    pub fn new(client: Client<OpenAIConfig>, model: &str) -> Self {
+    pub fn new(
+        client: Client<OpenAIConfig>,
+        model: &str,
+        catalog: ToolCatalog,
+        session_id: String,
+    ) -> Self {
+        Self::with_session_and_trace(client, model, catalog, session_id, new_trace_id())
+    }
+
+    /// Same as [`Agent::new`] but fixes both session and trace (e.g. external tracing).
+    pub fn with_session_and_trace(
+        client: Client<OpenAIConfig>,
+        model: &str,
+        catalog: ToolCatalog,
+        session_id: String,
+        trace_id: String,
+    ) -> Self {
+        let tools = catalog.openai_definitions();
         Self {
             client,
             model: model.to_string(),
             messages: Vec::new(),
-            tools: get_tool_definitions(),
+            tools,
+            catalog,
+            session_id,
+            trace_id,
         }
+    }
+
+    /// Id for this run; same value on every tool audit line for this task.
+    #[allow(dead_code)]
+    pub fn trace_id(&self) -> &str {
+        &self.trace_id
+    }
+
+    /// Session id for audit (future: one per chat from host; CLI: placeholder per process unless env set).
+    #[allow(dead_code)]
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    pub fn catalog_mut(&mut self) -> &mut ToolCatalog {
+        &mut self.catalog
     }
 
     /// Add a user message to start the conversation
@@ -29,32 +71,28 @@ impl Agent {
     }
 
     /// Run the agent loop until completion
-    pub async fn run(&mut self) -> Result<String, Box<dyn std::error::Error>> {
+    pub async fn run(&mut self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         loop {
             let response = self.send_request().await?;
             let message = response["choices"][0]["message"].clone();
 
-            // Add assistant message to history
             self.messages.push(message.clone());
 
-            // Check for tool calls
             if let Some(tool_calls) = message["tool_calls"].as_array() {
                 if tool_calls.is_empty() {
                     return Ok(self.extract_content(&message));
                 }
 
-                // Execute each tool call
                 for tool_call in tool_calls {
-                    self.handle_tool_call(tool_call)?;
+                    self.handle_tool_call(tool_call).await;
                 }
             } else {
-                // No tool calls, return final content
                 return Ok(self.extract_content(&message));
             }
         }
     }
 
-    async fn send_request(&self) -> Result<Value, Box<dyn std::error::Error>> {
+    async fn send_request(&self) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
         let response: Value = self
             .client
             .chat()
@@ -65,27 +103,31 @@ impl Agent {
             }))
             .await?;
 
-        eprintln!("Logs from your program will appear here!");
-        eprintln!("{}", response);
         Ok(response)
     }
 
-    fn handle_tool_call(&mut self, tool_call: &Value) -> Result<(), Box<dyn std::error::Error>> {
+    async fn handle_tool_call(&mut self, tool_call: &Value) {
         let tool_call_id = tool_call["id"].as_str().unwrap_or("");
         let function_name = tool_call["function"]["name"].as_str().unwrap_or("");
         let arguments_str = tool_call["function"]["arguments"].as_str().unwrap_or("{}");
-        let arguments: Value = serde_json::from_str(arguments_str)?;
+        let arguments: Value = serde_json::from_str(arguments_str).unwrap_or(json!({}));
 
-        let result = execute_tool(function_name, &arguments);
+        let result = self
+            .catalog
+            .execute(
+                &self.session_id,
+                &self.trace_id,
+                Some(tool_call_id).filter(|s| !s.is_empty()),
+                function_name,
+                &arguments,
+            )
+            .await;
 
-        // Add tool result to messages
         self.messages.push(json!({
             "role": "tool",
             "tool_call_id": tool_call_id,
             "content": result
         }));
-
-        Ok(())
     }
 
     fn extract_content(&self, message: &Value) -> String {

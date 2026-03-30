@@ -1,11 +1,12 @@
 mod agent;
-mod tools;
+mod toolkit;
 
 use async_openai::{Client, config::OpenAIConfig};
 use clap::Parser;
 use std::{env, process};
 
 use agent::Agent;
+use toolkit::{resolve_session_id, ToolCatalog};
 
 #[derive(Parser)]
 #[command(author, version, about)]
@@ -15,16 +16,20 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = Args::parse();
 
+    let catalog = ToolCatalog::bootstrap().await?;
     let client = create_client();
-    let mut agent = Agent::new(client, "deepseek-chat");
+    let session_id = resolve_session_id();
+    let mut agent = Agent::new(client, "deepseek-chat", catalog, session_id);
 
     agent.add_user_message(&args.prompt);
 
     let result = agent.run().await?;
     println!("{}", result);
+
+    agent.catalog_mut().shutdown_mcp().await;
 
     Ok(())
 }
@@ -37,7 +42,6 @@ fn create_client() -> Client<OpenAIConfig> {
         eprintln!("DEEPSEEK_API_KEY is not set");
         process::exit(1);
     });
-
 
     let config = OpenAIConfig::new()
         .with_api_base(base_url)

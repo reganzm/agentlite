@@ -1,121 +1,128 @@
-### 1、a mini agent
+### 1. A mini agent
 
 tag: v0.0.1  
-build a mini agent from scratch
+Build a mini agent from scratch.
 
 ---
 
-## 环境要求
+## Requirements
 
-- 若**从源码编译**：需安装 [Rust](https://www.rust-lang.org/tools/install)，且版本满足 `Cargo.toml` 中的 `rust-version`（当前为 **1.92+**）。
-- 若使用 **GitHub Releases** 预编译包：无需安装 Rust，将对应平台的二进制放到 `PATH` 即可。
+- **Building from source:** Install [Rust](https://www.rust-lang.org/tools/install) and use a toolchain that satisfies `rust-version` in `Cargo.toml` (currently **1.92+**).
+- **Prebuilt binaries from GitHub Releases:** No Rust needed; put the binary for your platform on your `PATH`.
 
-## 安装
+## Installation
 
-### 从源码构建（各系统相同）
+### Build from source (all platforms)
 
-在项目根目录执行：
+From the repository root:
 
 ```bash
 cargo build --release
 ```
 
-可执行文件路径：
+Output locations:
 
-| 系统 | 路径 |
-|------|------|
+| OS | Path |
+|----|------|
 | Windows | `target\release\agentlite.exe` |
 | Ubuntu / macOS | `target/release/agentlite` |
 
-可将该文件复制到任意目录并加入 `PATH`，或直接用 `cargo run --release --` 运行。
+Copy the binary wherever you like and add it to `PATH`, or run with `cargo run --release --` (see below).
 
 ### Windows
 
-1. 安装 Rust：在 [rustup.rs](https://rustup.rs/) 下载并安装，用 **x64 Native Tools** 或已带链接环境的终端执行构建。
-2. 进入项目目录后执行 `cargo build --release`。
-3. 将 `target\release\agentlite.exe` 放到希望使用的目录（可选：加入系统或用户 `PATH`）。
+1. Install Rust from [rustup.rs](https://rustup.rs/). Build from a shell that has the MSVC linker available (e.g. **x64 Native Tools** or a normal Developer environment).
+2. In the project directory, run `cargo build --release`.
+3. Optionally copy `target\release\agentlite.exe` to a folder on your user or system `PATH`.
 
-### Ubuntu（及其他 Linux）
+### Ubuntu (and other Linux)
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential pkg-config libssl-dev   # 若缺依赖再装
+sudo apt install -y build-essential pkg-config libssl-dev   # install if anything is missing
 cd /path/to/agentlite
 cargo build --release
-sudo cp target/release/agentlite /usr/local/bin/   # 可选，方便全局调用
+sudo cp target/release/agentlite /usr/local/bin/   # optional, for global use
 ```
 
 ### macOS
 
 ```bash
-xcode-select --install   # 若尚未安装命令行工具
+xcode-select --install   # if Command Line Tools are not installed yet
 cd /path/to/agentlite
 cargo build --release
-cp target/release/agentlite /usr/local/bin/   # 可选
+cp target/release/agentlite /usr/local/bin/   # optional
 ```
 
 ---
 
-## 配置
+## Configuration
 
-程序通过环境变量连接 DeepSeek（OpenAI 兼容接口）：
+The program talks to DeepSeek (OpenAI-compatible API) via environment variables:
 
-| 变量 | 是否必填 | 说明 |
-|------|----------|------|
-| `DEEPSEEK_API_KEY` | **必填** | DeepSeek API 密钥。未设置时程序会退出并提示错误。 |
-| `DEEPSEEK_BASE_URL` | 可选 | API 地址，默认 `https://api.deepseek.com`。 |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DEEPSEEK_API_KEY` | **Yes** | DeepSeek API key. The process exits with an error if unset. |
+| `DEEPSEEK_BASE_URL` | No | API base URL; defaults to `https://api.deepseek.com`. |
+| `AGENTLITE_TOOL_LOG` | No | **Tool-call audit log** as **JSON Lines** (one JSON object per line). If unset: writes under **`{executable directory}/logs/tool-audit-YYYY-MM-DD.log`** (**UTC daily rotation**; a new file when the UTC day changes). Set to `disabled` or `0` to disable. If set to a path: an existing or new directory is treated as the **log directory** (daily files); an existing file or a path ending in `.log` that is not a directory is a **single fixed file** (no daily rotation). |
+| `AGENTLITE_MCP_CONFIG` | No | Path to a JSON file listing MCP servers (see the toolkit module). |
+| `AGENTLITE_SESSION_ID` | No | **Session id** (placeholder). Target behavior: like a browser session (login through logout) or **one `session_id` per opened chat**, provided by the host. Current CLI: if unset, a **new random UUID** is generated on each process start (no file); if set, that value is used (e.g. integration testing). |
 
-### Windows（PowerShell，当前会话）
+Session vs audit (target model): **one `session_id` → multiple tasks within the same conversation**; **one `trace_id` → multiple `tool_call`s in one `run`**. In the current CLI, each launch usually gets a new placeholder `session_id`.
+
+Each audit line includes: `session_id`, `trace_id` (unchanged for one `run`), `tool_call_id` (model `tool_calls[].id`), `timestamp` (RFC3339), `invoked_at_ms` (UTC epoch ms at call start, aligned with `timestamp`), `tool`, `arguments`, `backend`, `mcp_server_tool`, `duration_ms` (execution time in ms), `status`, `result_length`, `result_preview`. You can aggregate by `session_id`, then by `trace_id` for a single task’s tool chain.
+
+### Windows (PowerShell, current session)
 
 ```powershell
-$env:DEEPSEEK_API_KEY = "你的密钥"
-# 可选
+$env:DEEPSEEK_API_KEY = "your-api-key"
+# optional
 $env:DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 ```
 
-### Windows（CMD，当前会话）
+### Windows (CMD, current session)
 
 ```cmd
-set DEEPSEEK_API_KEY=你的密钥
+set DEEPSEEK_API_KEY=your-api-key
 set DEEPSEEK_BASE_URL=https://api.deepseek.com
 ```
 
-### Ubuntu / macOS（Bash/Zsh，当前会话）
+### Ubuntu / macOS (Bash/Zsh, current session)
 
 ```bash
-export DEEPSEEK_API_KEY="你的密钥"
-# 可选
+export DEEPSEEK_API_KEY="your-api-key"
+# optional
 export DEEPSEEK_BASE_URL="https://api.deepseek.com"
 ```
 
-将 `export` 行写入 `~/.bashrc`、`~/.zshrc` 等可在新终端里长期生效（改完后执行 `source ~/.bashrc` 或重新打开终端）。
+Add the `export` lines to `~/.bashrc`, `~/.zshrc`, etc. for persistence in new shells (then `source ~/.bashrc` or open a new terminal).
 
 ---
 
-## 使用方法
+## Usage
 
-在已配置好环境变量的终端中：
-
-```bash
-agentlite -p "你的问题或任务描述"
-```
-
-或长参数：
+With the environment variables set in your shell:
 
 ```bash
-agentlite --prompt "你的问题或任务描述"
+agentlite -p "your question or task"
 ```
 
-从源码目录直接运行（不拷贝二进制）：
+Long form:
 
 ```bash
-cargo run --release -- -p "你的问题或任务描述"
+agentlite --prompt "your question or task"
 ```
 
-查看帮助：
+Run from the repo without installing the binary:
+
+```bash
+cargo run --release -- -p "your question or task"
+```
+
+Help:
 
 ```bash
 agentlite --help
 ```
 
-程序会把模型回复打印到标准输出。
+The model response is printed to standard output.
